@@ -11,11 +11,13 @@
         <div>Your ip is <span id="ip"></span></div>
         <form id="knock-form" action="/knock" method="post" enctype="application/x-www-form-urlencoded">
             <input name="csrf-token" value="" id="csrf-input" type="hidden"></input>
+            <input name="token" value="" id="token" type="password"></input>
             <button id="knock-button">Knock</button>
         </form>
         <div style="height: 2rem;"></div>
         <form id="flush-form" action="/knock/flush" method="post" enctype="application/x-www-form-urlencoded">
             <input name="csrf-token" value="" id="flush-csrf" type="hidden"></input>
+            <input name="token" value="" id="token" type="password"></input>
             <button id="flush-button">Flush</button>
         </form>
     </div>

@@ -92,7 +92,9 @@ func allowIP(ip string) bool {
 	return ok
 }
 
-func checkCSRF(w http.ResponseWriter, r *http.Request) bool {
+var globalToken string
+
+func checkToken(w http.ResponseWriter, r *http.Request) bool {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return false
@@ -116,6 +118,11 @@ func checkCSRF(w http.ResponseWriter, r *http.Request) bool {
 	}
 	if token != csrf {
 		http.Error(w, "Forbidden", http.StatusForbidden)
+		return false
+	}
+	token = r.Form.Get("token")
+	if token != globalToken {
+		http.Error(w, "Bad Token", http.StatusForbidden)
 		return false
 	}
 	return true
@@ -148,7 +155,7 @@ func main() {
 				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			if !checkCSRF(w, r) {
+			if !checkToken(w, r) {
 				return
 			}
 			s, ok := nftExecf(nftdel)
@@ -176,7 +183,7 @@ func main() {
 			http.Error(w, "Bad IP", http.StatusBadRequest)
 			return
 		}
-		if !checkCSRF(w, r) {
+		if !checkToken(w, r) {
 			return
 		}
 
@@ -190,6 +197,11 @@ func main() {
 	addr := os.Getenv("LISTEN")
 	if addr == "" {
 		addr = ":8080"
+	}
+	globalToken = os.Getenv("TOKEN")
+	if globalToken == "" {
+		globalToken = getCSRF()
+		log.Printf("Generated token: %s", globalToken)
 	}
 	log.Printf("Listening on %s\n", addr)
 	http.ListenAndServe(addr, nil)
