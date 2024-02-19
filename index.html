@@ -13,6 +13,11 @@
             <input name="csrf-token" value="" id="csrf-input" type="hidden"></input>
             <button id="knock-button">Knock</button>
         </form>
+        <div style="height: 2rem;"></div>
+        <form id="flush-form" action="/knock/flush" method="post" enctype="application/x-www-form-urlencoded">
+            <input name="csrf-token" value="" id="flush-csrf" type="hidden"></input>
+            <button id="flush-button">Flush</button>
+        </form>
     </div>
     <script>
         function getCookie(name) {
@@ -33,6 +38,21 @@
                 event.preventDefault();
                 var csrfToken = getCookie('csrf-token');
                 var csrfInput = document.getElementById('csrf-input');
+                csrfInput.value = csrfToken;
+                form.submit();
+            });
+        }());
+
+        (function () {
+            var button = document.getElementById('flush-button');
+            var form = document.getElementById('flush-form');
+            button.addEventListener('click', function (event) {
+                event.preventDefault();
+                if (!window.confirm('Are you sure you want to flush the allowed ip?')) {
+                    return;
+                }
+                var csrfToken = getCookie('csrf-token');
+                var csrfInput = document.getElementById('flush-csrf');
                 csrfInput.value = csrfToken;
                 form.submit();
             });
