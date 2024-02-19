@@ -18,11 +18,7 @@ mkdir -p ./build
 
 release_platform \
     linux amd64 \
-    linux 386 \
-    windows amd64 \
-    windows 386 \
-    darwin arm64 \
-    darwin amd64
+    linux 386
 
 cd ./build
 md5sum >md5.sum ./*
