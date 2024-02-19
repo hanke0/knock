@@ -7,17 +7,17 @@
 </head>
 
 <body>
-    <div>
-        <div>Your ip is <span id="ip"></span></div>
+    <div align="center" style="padding-top: 2rem;">
+        <div style="padding: 1rem 0;">IP: <span id="ip"></span></div>
         <form id="knock-form" action="/knock" method="post" enctype="application/x-www-form-urlencoded">
             <input name="csrf-token" value="" id="csrf-input" type="hidden"></input>
-            <input name="token" value="" id="token" type="password"></input>
+            <input name="token" value="" id="token" type="password" placeholder="auth token"></input>
             <button id="knock-button">Knock</button>
         </form>
         <div style="height: 2rem;"></div>
         <form id="flush-form" action="/knock/flush" method="post" enctype="application/x-www-form-urlencoded">
             <input name="csrf-token" value="" id="flush-csrf" type="hidden"></input>
-            <input name="token" value="" id="token" type="password"></input>
+            <input name="token" value="" id="token" type="password" placeholder="auth token"></input>
             <button id="flush-button">Flush</button>
         </form>
     </div>
@@ -62,11 +62,29 @@
 
         (function () {
             var span = document.getElementById('ip');
-            fetch('https://api.ipify.org?format=json')
-                .then(response => response.json())
-                .then(data => {
-                    span.innerText = data.ip;
-                });
+            fetch('/ip').then(response => {
+                if (response.status != 200) {
+                    throw new Error('Invalid response' + response.status);
+                }
+                return response.text();
+            }).then(data => {
+                span.innerText = data;
+            }).catch(error => {
+                console.error('Error:', error);
+                fetch('https://api.ipify.org?format=json')
+                    .then(response => {
+                        if (response.status != 200) {
+                            throw new Error('Invalid response' + response.status);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        span.innerText = data.ip;
+                    }).catch(error => {
+                        console.error('Error:', error);
+                        span.innerText = 'unknown';
+                    });
+            });
         }());
     </script>
 </body>
