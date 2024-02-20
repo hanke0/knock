@@ -4,7 +4,7 @@ set -Eeo pipefail
 
 release_platform() {
     while [ $# -gt 0 ]; do
-        name="./build/knock-$1-$2"
+        name="./dist/knock-$1-$2"
         if [ "$1" = "windows" ]; then
             name="$name.exe"
         fi
@@ -13,12 +13,12 @@ release_platform() {
     done
 }
 
-rm -rf ./build
-mkdir -p ./build
+rm -rf ./dist
+mkdir -p ./dist
 
 release_platform \
     linux amd64 \
     linux 386
 
-cd ./build
+cd ./dist
 md5sum >md5.sum ./*
