@@ -167,7 +167,6 @@ func main() {
 	log.Printf("nft add ipv6 action: %s", nftAddIPv6)
 	log.Printf("nft flush action: %s", nftdel)
 	log.Printf("nft ban ipv4 action: %s", nftBanIPv4)
-	var ipSplitRE = regexp.MustCompile(`[\s,;]*`)
 	http.HandleFunc("/knock/flush", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -183,6 +182,7 @@ func main() {
 		fmt.Fprintf(w, "OK: %v", ok)
 	})
 
+	var ipSplitRE = regexp.MustCompile(`[\s,;]*`)
 	http.HandleFunc("/knock/ban", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -192,22 +192,22 @@ func main() {
 			return
 		}
 		var goods []string
-		ips := r.FormValue("ips")
-		for _, ip := range ipSplitRE.Split(ips, -1) {
+		ips := ipSplitRE.Split(r.FormValue("ips"), -1)
+		for _, ip := range ips {
 			if v := normalizeIP(ip); v != nil {
 				goods = append(goods, v.String())
 			}
 		}
 		if len(goods) == 0 {
-			http.Error(w, fmt.Sprintf("Bad IP: %s", ips), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("Bad IP: %s", strings.Join(ips, ",")), http.StatusBadRequest)
 			return
 		}
 		goodIPs := strings.Join(goods, ",")
-		s, ok := nftExecf(nftdel, goodIPs)
+		s, ok := nftExecf(nftBanIPv4, goodIPs)
 		log.Printf("nft ban ip: success=%v, result: %s", ok, s)
 		writeHeader(w, true)
 		w.WriteHeader(200)
-		fmt.Fprintf(w, "Input  IP: %s\n", ips)
+		fmt.Fprintf(w, "Input  IP: %s\n", strings.Join(ips, ","))
 		fmt.Fprintf(w, "Parsed IP: %s\n", goodIPs)
 		fmt.Fprintf(w, "OK: %v", ok)
 	})

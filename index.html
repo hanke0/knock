@@ -4,6 +4,14 @@
 <head>
     <title>Knock</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <style>
+        form {
+            padding: 2rem 2rem;
+            border: 1px solid #ccc;
+            border-radius: 0.5rem;
+            margin-top: 1rem;
+        }
+    </style>
 </head>
 
 <body>
@@ -14,17 +22,15 @@
             <input name="token" value="" type="password" placeholder="auth token"></input>
             <button id="knock-button">Knock</button>
         </form>
-        <div style="height: 2rem;"></div>
         <form id="flush-form" action="/knock/flush" method="post" enctype="application/x-www-form-urlencoded">
             <input name="csrf-token" value="" id="flush-csrf" type="hidden"></input>
             <input name="token" value="" type="password" placeholder="auth token"></input>
             <button id="flush-button">Flush</button>
         </form>
-        <div style="height: 2rem;"></div>
         <form id="ban-form" action="/knock/ban" method="post" enctype="application/x-www-form-urlencoded">
             <input name="csrf-token" value="" id="ban-csrf" type="hidden"></input>
             <input name="token" value="" type="password" placeholder="auth token"></input>
-            <input name="ips" value="" type="password" placeholder="ip list"></input>
+            <input name="ips" value="" type="text" placeholder="ip list"></input>
             <button id="ban-button">Ban</button>
         </form>
     </div>
