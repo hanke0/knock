@@ -10,7 +10,7 @@
     <div align="center" style="padding-top: 2rem;">
         <div style="padding: 1rem 0;">IP: <span id="ip"></span></div>
         <form id="knock-form" action="/knock" method="post" enctype="application/x-www-form-urlencoded">
-            <input name="csrf-token" value="" id="csrf-input" type="hidden"></input>
+            <input name="csrf-token" value="" id="knock-csrf" type="hidden"></input>
             <input name="token" value="" type="password" placeholder="auth token"></input>
             <button id="knock-button">Knock</button>
         </form>
@@ -19,6 +19,13 @@
             <input name="csrf-token" value="" id="flush-csrf" type="hidden"></input>
             <input name="token" value="" type="password" placeholder="auth token"></input>
             <button id="flush-button">Flush</button>
+        </form>
+        <div style="height: 2rem;"></div>
+        <form id="ban-form" action="/knock/ban" method="post" enctype="application/x-www-form-urlencoded">
+            <input name="csrf-token" value="" id="ban-csrf" type="hidden"></input>
+            <input name="token" value="" type="password" placeholder="auth token"></input>
+            <input name="ips" value="" type="password" placeholder="ip list"></input>
+            <button id="flush-button">Ban</button>
         </form>
     </div>
     <script>
@@ -32,32 +39,22 @@
             }
             return "";
         }
-
-        (function () {
-            var button = document.getElementById('knock-button');
-            var form = document.getElementById('knock-form');
+        function fixSubmitCSRF(formId, btnId, csrfId) {
+            var button = document.getElementById(btnId);
+            var form = document.getElementById(formId);
             button.addEventListener('click', function (event) {
                 event.preventDefault();
                 var csrfToken = getCookie('csrf-token');
-                var csrfInput = document.getElementById('csrf-input');
+                var csrfInput = document.getElementById(csrfId);
                 csrfInput.value = csrfToken;
                 form.submit();
             });
-        }());
+        }
 
         (function () {
-            var button = document.getElementById('flush-button');
-            var form = document.getElementById('flush-form');
-            button.addEventListener('click', function (event) {
-                event.preventDefault();
-                if (!window.confirm('Are you sure you want to flush the allowed ip?')) {
-                    return;
-                }
-                var csrfToken = getCookie('csrf-token');
-                var csrfInput = document.getElementById('flush-csrf');
-                csrfInput.value = csrfToken;
-                form.submit();
-            });
+            fixSubmitCSRF("knock-form", "knock-button", "knock-csrf");
+            fixSubmitCSRF("flush-form", "flush-button", "flush-csrf");
+            fixSubmitCSRF("ban-form", "ban-button", "ban-csrf");
         }());
 
         (function () {

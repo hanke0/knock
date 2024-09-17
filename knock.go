@@ -2,6 +2,8 @@ package main
 
 import (
 	_ "embed"
+	"regexp"
+	"strings"
 
 	"bytes"
 	"fmt"
@@ -52,8 +54,9 @@ func normalizeIP(ip string) net.IP {
 	return a
 }
 
-var nftAddIPv4 = `add element inet filter addr-set-sshd { %s }`
-var nftAddIPv6 = `add element inet filter ipv6-addr-set-sshd { %s }`
+var nftAddIPv4 = `add element inet filter ipv4_ssh_allow_set { %s }`
+var nftAddIPv6 = `add element inet filter ipv6_ssh_allow_set { %s }`
+var nftBanIPv4 = `add element inet filter ipv4_block_set { %s }`
 
 var nftdel = `
 flush set inet filter addr-set-sshd; 
@@ -156,26 +159,59 @@ func main() {
 	if v := os.Getenv("NFTABLES_FLUSH_ACTION"); v != "" {
 		nftdel = v
 	}
+	if v := os.Getenv("NFTABLES_BAN_IPV4_ACTION"); v != "" {
+		nftBanIPv4 = v
+	}
 
 	log.Printf("nft add ipv4 action: %s", nftAddIPv4)
 	log.Printf("nft add ipv6 action: %s", nftAddIPv6)
 	log.Printf("nft flush action: %s", nftdel)
-	if nftdel != "" {
-		http.HandleFunc("/knock/flush", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != "POST" {
-				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-				return
+	log.Printf("nft ban ipv4 action: %s", nftBanIPv4)
+	var ipSplitRE = regexp.MustCompile(`[\s,;]*`)
+	http.HandleFunc("/knock/flush", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !checkToken(w, r) {
+			return
+		}
+		s, ok := nftExecf(nftdel)
+		log.Printf("nft flush: success=%v, result: %s", ok, s)
+		writeHeader(w, true)
+		w.WriteHeader(200)
+		fmt.Fprintf(w, "OK: %v", ok)
+	})
+
+	http.HandleFunc("/knock/ban", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !checkToken(w, r) {
+			return
+		}
+		_ = r.ParseForm()
+		var goods []string
+		ips := r.FormValue("ips")
+		for _, ip := range ipSplitRE.Split(ips, -1) {
+			if v := normalizeIP(ip); v != nil {
+				goods = append(goods, v.String())
 			}
-			if !checkToken(w, r) {
-				return
-			}
-			s, ok := nftExecf(nftdel)
-			log.Printf("nft flush: success=%v, result: %s", ok, s)
-			writeHeader(w, true)
-			w.WriteHeader(200)
-			fmt.Fprintf(w, "OK: %v", ok)
-		})
-	}
+		}
+		if len(goods) == 0 {
+			http.Error(w, fmt.Sprintf("Bad IP: %s", ips), http.StatusBadRequest)
+			return
+		}
+		goodIPs := strings.Join(goods, ",")
+		s, ok := nftExecf(nftdel, goodIPs)
+		log.Printf("nft ban ip: success=%v, result: %s", ok, s)
+		writeHeader(w, true)
+		w.WriteHeader(200)
+		fmt.Fprintf(w, "Input  IP: %s\n", ips)
+		fmt.Fprintf(w, "Parsed IP: %s\n", goodIPs)
+		fmt.Fprintf(w, "OK: %v", ok)
+	})
 
 	http.HandleFunc("/knock", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
