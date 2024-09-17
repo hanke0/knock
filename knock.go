@@ -182,7 +182,7 @@ func main() {
 		fmt.Fprintf(w, "OK: %v", ok)
 	})
 
-	var ipSplitRE = regexp.MustCompile(`[\s,;]*`)
+	var ipSplitRE = regexp.MustCompile(`[\s,;]+`)
 	http.HandleFunc("/knock/ban", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
