@@ -106,7 +106,7 @@ var globalToken string
 
 func checkToken(w http.ResponseWriter, r *http.Request) bool {
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+		http.Error(w, "Parse Form Error", http.StatusBadRequest)
 		return false
 	}
 
@@ -191,7 +191,6 @@ func main() {
 		if !checkToken(w, r) {
 			return
 		}
-		_ = r.ParseForm()
 		var goods []string
 		ips := r.FormValue("ips")
 		for _, ip := range ipSplitRE.Split(ips, -1) {
