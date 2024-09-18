@@ -6,52 +6,91 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <style>
         form {
+            display: block;
+            width: fit-content;
             padding: 2rem 2rem;
             border: 1px solid #ccc;
             border-radius: 0.5rem;
             margin-top: 1rem;
         }
+
+        form input {
+            display: block;
+            padding: 0.2rem 0.4rem;
+        }
+
+        form input:not([type="hidden"]) {
+            margin-top: 0.5rem;
+        }
+
+        h2 {
+            font-size: 1.2rem;
+            padding: 0 0;
+            margin: 0 0;
+            font-weight: normal;
+        }
+
+        button {
+            padding: 0.2rem 0.8rem;
+            margin-top: 0.5rem;
+        }
+
+        .footer {
+            font-size: small;
+            color: gray;
+            font-style: italic;
+        }
+
+        .footer a {
+            font-size: inherit;
+            color: inherit;
+            text-decoration: underline;
+        }
     </style>
 </head>
 
 <body>
-    <div align="center" style="padding-top: 2rem;">
-        <div style="padding: 1rem 0;">IP: <span id="ip"></span></div>
+    <div align="center">
+        <h1>Knock</h1>
         <form id="knock-form" action="/knock" method="post" enctype="application/x-www-form-urlencoded">
-            <input name="csrf-token" value="" id="knock-csrf" type="hidden"></input>
+            <h2>Allow IP: <span id="ip"></span></h2>
+            <input name="csrf-token" value="" id="knock-csrf" type="hidden" hidden></input>
             <input name="token" value="" type="password" placeholder="auth token"></input>
             <button id="knock-button">Knock</button>
         </form>
         <form id="flush-form" action="/knock/flush" method="post" enctype="application/x-www-form-urlencoded">
-            <input name="csrf-token" value="" id="flush-csrf" type="hidden"></input>
+            <h2>Flush all allowed IP</h2>
+            <input name="csrf-token" value="" id="flush-csrf" type="hidden" hidden></input>
             <input name="token" value="" type="password" placeholder="auth token"></input>
             <button id="flush-button">Flush</button>
         </form>
         <form id="ban-form" action="/knock/ban" method="post" enctype="application/x-www-form-urlencoded">
-            <input name="csrf-token" value="" id="ban-csrf" type="hidden"></input>
+            <h2>Ban IP</h2>
+            <input name="csrf-token" value="" id="ban-csrf" type="hidden" hidden></input>
             <input name="token" value="" type="password" placeholder="auth token"></input>
             <input name="ips" value="" type="text" placeholder="ip list"></input>
             <button id="ban-button">Ban</button>
         </form>
+        <p class="footer">Powered By <a href="https://github.com/hanke0/knock">Knock</a></p>
     </div>
     <script>
         function getCookie(name) {
-            var nameEQ = name + "=";
-            var ca = document.cookie.split(';');
-            for (var i = 0; i < ca.length; i++) {
-                var c = ca[i];
+            const nameEQ = name + "=";
+            const ca = document.cookie.split(';');
+            for (let i = 0; i < ca.length; i++) {
+                const c = ca[i];
                 while (c.charAt(0) == ' ') c = c.substring(1, c.length);
                 if (c.indexOf(nameEQ) == 0) return c.substring(nameEQ.length, c.length);
             }
             return "";
         }
         function fixSubmitCSRF(formId, btnId, csrfId) {
-            var button = document.getElementById(btnId);
-            var form = document.getElementById(formId);
+            const button = document.getElementById(btnId);
+            const form = document.getElementById(formId);
             button.addEventListener('click', function (event) {
                 event.preventDefault();
-                var csrfToken = getCookie('csrf-token');
-                var csrfInput = document.getElementById(csrfId);
+                const csrfToken = getCookie('csrf-token');
+                const csrfInput = document.getElementById(csrfId);
                 csrfInput.value = csrfToken;
                 form.submit();
             });
@@ -64,30 +103,30 @@
         }());
 
         (function () {
-            var span = document.getElementById('ip');
-            fetch('/ip').then(response => {
-                if (response.status != 200) {
-                    throw new Error('Invalid response' + response.status);
-                }
-                return response.text();
-            }).then(data => {
-                span.innerText = data;
-            }).catch(error => {
-                console.error('Error:', error);
-                fetch('https://api.ipify.org?format=json')
-                    .then(response => {
-                        if (response.status != 200) {
-                            throw new Error('Invalid response' + response.status);
-                        }
-                        return response.json();
-                    })
-                    .then(data => {
-                        span.innerText = data.ip;
-                    }).catch(error => {
-                        console.error('Error:', error);
-                        span.innerText = 'unknown';
-                    });
-            });
+            const span = document.getElementById('ip');
+            const urlList = [
+                "/ip",
+                "https://api.ipify.org",
+                "https://api64.ipify.org",
+            ];
+            const getIP = (i) => {
+                fetch(urlList[i]).then(response => {
+                    if (response.status != 200) {
+                        throw new Error('Invalid response' + response.status);
+                    }
+                    return response.text();
+                }).then(data => {
+                    span.innerText = data;
+                }).catch(error => {
+                    console.error('Error:', error);
+                    if (i + 1 < urlList.length) {
+                        getIP(i + 1);
+                    } else {
+                        span.innerText = 'Unknown';
+                    }
+                });
+            }
+            getIP(0);
         }());
     </script>
 </body>
