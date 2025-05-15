@@ -2,23 +2,38 @@ package main
 
 import (
 	_ "embed"
-	"regexp"
-	"strings"
+	"os/exec"
+	"time"
 
+	"bufio"
 	"bytes"
+	"flag"
 	"fmt"
+	"html/template"
+	"io"
 	"log"
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
-	"strconv"
-	"sync"
+	"regexp"
+	"slices"
+	"strings"
 )
 
 //go:embed index.html
-var indexHTML []byte
+var indexHTML string
+
+var indexTemplate *template.Template
+
+func init() {
+	var err error
+	indexTemplate, err = template.New("index").Parse(indexHTML)
+	if err != nil {
+		log.Fatalf("error parsing index template: %v", err)
+	}
+}
 
 func getCSRF() string {
 	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -29,7 +44,7 @@ func getCSRF() string {
 	return string(b)
 }
 
-func writeHeader(w http.ResponseWriter, raw bool) {
+func writeHeader(w http.ResponseWriter, raw bool) string {
 	if raw {
 		w.Header().Set("Content-Type", "text/plain")
 	} else {
@@ -40,66 +55,11 @@ func writeHeader(w http.ResponseWriter, raw bool) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-XSS-Protection", "1; mode=block")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Add("Set-Cookie", fmt.Sprintf("csrf-token=%s; Max-Age=3000; Path=/knock; Secure; SameSite=Strict", getCSRF()))
-}
-
-func normalizeIP(ip string) net.IP {
-	a := net.ParseIP(ip)
-	if a == nil {
-		return nil
-	}
-	if !a.IsGlobalUnicast() {
-		return nil
-	}
-	return a
-}
-
-var nftAddIPv4 = `add element inet filter ipv4_ssh_allow_set { %s }`
-var nftAddIPv6 = `add element inet filter ipv6_ssh_allow_set { %s }`
-var nftBanIPv4 = `add element inet filter ipv4_block_set { %s }`
-
-var nftdel = `
-flush set inet filter addr-set-sshd; 
-flush set inet filter ipv6-addr-set-sshd;`
-
-type Buffer struct {
-	b bytes.Buffer
-	m sync.Mutex
-}
-
-func (b *Buffer) Write(p []byte) (n int, err error) {
-	b.m.Lock()
-	defer b.m.Unlock()
-	return b.b.Write(p)
-}
-
-func nftExecf(format string, args ...interface{}) (string, bool) {
-	var buf Buffer
-	var stdin bytes.Buffer
-	fmt.Fprintf(&stdin, format, args...)
-	cmd := exec.Command("nft", "-f", "-")
-	cmd.Stdin = &stdin
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(&buf, "\n%v", err)
-		return buf.b.String(), false
-	}
-	return buf.b.String(), true
-}
-
-func allowIP(ip net.IP) bool {
-	var (
-		s  string
-		ok bool
-	)
-	if v := ip.To4(); len(v) == net.IPv4len {
-		s, ok = nftExecf(nftAddIPv4, v.String())
-	} else {
-		s, ok = nftExecf(nftAddIPv6, ip.String())
-	}
-	log.Printf("nft delete: %s, success=%v, result: %s", ip, ok, s)
-	return ok
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-site")
+	token := getCSRF()
+	w.Header().Add("Set-Cookie",
+		fmt.Sprintf("csrf-token=%s; Max-Age=3000; Path=/knock; Secure; SameSite=Strict", token))
+	return token
 }
 
 var globalToken string
@@ -124,131 +84,409 @@ func checkToken(w http.ResponseWriter, r *http.Request) bool {
 	}
 	if csrf == "" {
 		http.Error(w, "Forbidden", http.StatusForbidden)
+		log.Printf("no csrf token found")
 		return false
 	}
 	if token != csrf {
 		http.Error(w, "Forbidden", http.StatusForbidden)
+		log.Printf("csrf token mismatch: %s != %s", token, csrf)
 		return false
 	}
 	token = r.Form.Get("token")
 	if token != globalToken {
-		http.Error(w, "Bad Token", http.StatusForbidden)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		log.Printf("token mismatch: %s != %s", token, globalToken)
 		return false
 	}
 	return true
 }
 
-func main() {
-	envPort := os.Getenv("PORT")
-	if envPort == "" {
-		envPort = "22"
-	}
-	port, err := strconv.Atoi(envPort)
-	if err != nil {
-		panic(err)
-	}
-	if port < 1 || port > 65535 {
-		panic("bad port")
-	}
-	if v := os.Getenv("NFTABLES_ENABLE_IPV4_ACTION"); v != "" {
-		nftAddIPv4 = v
-	}
-	if v := os.Getenv("NFTABLES_ENABLE_IPV6_ACTION"); v != "" {
-		nftAddIPv6 = v
-	}
-	if v := os.Getenv("NFTABLES_FLUSH_ACTION"); v != "" {
-		nftdel = v
-	}
-	if v := os.Getenv("NFTABLES_BAN_IPV4_ACTION"); v != "" {
-		nftBanIPv4 = v
-	}
+var configGroupRE = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*$`)
 
-	log.Printf("nft add ipv4 action: %s", nftAddIPv4)
-	log.Printf("nft add ipv6 action: %s", nftAddIPv6)
-	log.Printf("nft flush action: %s", nftdel)
-	log.Printf("nft ban ipv4 action: %s", nftBanIPv4)
-	http.HandleFunc("/knock/flush", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-			return
+type configGroup struct {
+	Path       string
+	Desc       string
+	Background bool
+	Script     string
+}
+
+func parseBool(s string) (bool, error) {
+	switch strings.ToLower(s) {
+	case "yes", "y", "on", "true", "1":
+		return true, nil
+	case "no", "n", "off", "false", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid boolean value: %s", s)
+	}
+}
+
+func parseConfigGroup(line string) (*configGroup, error) {
+	match := configGroupRE.FindStringSubmatch(line)
+	if match == nil {
+		return nil, nil
+	}
+	g := strings.TrimSpace(match[1])
+	var cfg configGroup
+	parts := strings.Split(g, "#")
+	cfg.Path = parts[0]
+	p, err := url.Parse(cfg.Path)
+	if err != nil {
+		return nil, fmt.Errorf("bad config group: %s, cause by %w", g, err)
+	}
+	cfg.Path = p.Path
+
+	for _, part := range parts[1:] {
+		keyvalue := strings.SplitN(part, "=", 2)
+		if len(keyvalue) != 2 {
+			return nil, fmt.Errorf("bad config group: %s", g)
 		}
-		if !checkToken(w, r) {
-			return
+		key := strings.TrimSpace(keyvalue[0])
+		value := strings.TrimSpace(keyvalue[1])
+		switch key {
+		case "desc":
+			cfg.Desc = value
+		case "background":
+			b, err := parseBool(value)
+			if err != nil {
+				return nil, fmt.Errorf("bad config group: %s, cause by %w", g, err)
+			}
+			cfg.Background = b
+		default:
+			return nil, fmt.Errorf("bad config group: %s", g)
 		}
-		s, ok := nftExecf(nftdel)
-		log.Printf("nft flush: success=%v, result: %s", ok, s)
-		writeHeader(w, true)
-		w.WriteHeader(200)
-		fmt.Fprintf(w, "OK: %v", ok)
+	}
+	return &cfg, nil
+}
+
+type Config struct {
+	Groups []*configGroup
+}
+
+type templateData struct {
+	Config *Config
+	Csrf   string
+	IPPath string
+}
+
+var allSpaceRE = regexp.MustCompile(`^\s*$`)
+
+func isAllSpace(s string) bool {
+	return allSpaceRE.MatchString(s)
+}
+
+func ParseConfig(r io.Reader) (*Config, error) {
+	var (
+		config  = &Config{}
+		scanner = bufio.NewScanner(r)
+		script  strings.Builder
+		group   *configGroup
+		line    int
+	)
+	// We need to split by linebreak but keep the '\r';
+	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		if atEOF && len(data) == 0 {
+			return 0, nil, nil
+		}
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			return i + 1, data[:i], nil
+		}
+		if atEOF {
+			return len(data), data, nil
+		}
+		return 0, nil, nil
 	})
 
-	var ipSplitRE = regexp.MustCompile(`[\s,;]+`)
-	http.HandleFunc("/knock/ban", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-			return
+	for scanner.Scan() {
+		line++
+		txt := scanner.Text()
+		g, err := parseConfigGroup(txt)
+		if err != nil {
+			return nil, fmt.Errorf("fail at L%d, %w", line, err)
 		}
-		if !checkToken(w, r) {
-			return
+		if g == nil && group == nil {
+			if isAllSpace(txt) {
+				continue
+			}
+			return nil, fmt.Errorf("fail at L%d, no group found", line)
 		}
-		var goods []string
-		ips := ipSplitRE.Split(r.FormValue("ips"), -1)
-		for _, ip := range ips {
-			if v := normalizeIP(ip); v != nil {
-				goods = append(goods, v.String())
+		if g != nil {
+			if group != nil {
+				group.Script = script.String()
+				script.Reset()
+				config.Groups = append(config.Groups, group)
+			}
+			group = g
+			continue
+		}
+		script.WriteString(txt)
+		script.WriteByte('\n')
+	}
+	if group != nil {
+		group.Script = script.String()
+		config.Groups = append(config.Groups, group)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading config: %v", err)
+	}
+	return config, nil
+}
+
+func ParseConfigFile(path string) (*Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("error opening config file: %v", err)
+	}
+	return ParseConfig(f)
+}
+
+var inheritEnv = []string{
+	"TZ", "PATH", "HOME", "LANG",
+	"LC_COLLATE", "LC_CTYPE", "LC_MONETARY", "LC_MESSAGES", "LC_NUMERIC", "LC_TIME", "LC_ALL",
+}
+
+func runScripts(shell, script string, inBackground bool, envs ...string) error {
+	cmd := exec.Command(shell, "-c", script)
+	var outout strings.Builder
+	cmd.Stdout = &outout
+	cmd.Stderr = &outout
+	cmd.Dir = os.TempDir()
+	cmd.Env = envs
+	for _, name := range inheritEnv {
+		if !slices.ContainsFunc(cmd.Env, func(e string) bool {
+			return strings.HasPrefix(e, name+"=")
+		}) {
+			v, ok := os.LookupEnv(name)
+			if ok {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", name, v))
 			}
 		}
-		if len(goods) == 0 {
-			http.Error(w, fmt.Sprintf("Bad IP: %s", strings.Join(ips, ",")), http.StatusBadRequest)
-			return
-		}
-		goodIPs := strings.Join(goods, ",")
-		s, ok := nftExecf(nftBanIPv4, goodIPs)
-		log.Printf("nft ban ip: success=%v, result: %s", ok, s)
-		writeHeader(w, true)
-		w.WriteHeader(200)
-		fmt.Fprintf(w, "Input  IP: %s\n", strings.Join(ips, ","))
-		fmt.Fprintf(w, "Parsed IP: %s\n", goodIPs)
-		fmt.Fprintf(w, "OK: %v", ok)
-	})
+	}
+	if inBackground {
+		go func() {
+			err := cmd.Run()
+			if err != nil {
+				log.Printf("error running script: %v, output: %s", err, outout.String())
+				return
+			}
+		}()
+		return nil
+	}
+	err := cmd.Run()
+	if err != nil {
+		log.Printf("error running script: %v, output: %s", err, outout.String())
+		return err
+	}
+	return nil
+}
 
-	http.HandleFunc("/knock", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
-			writeHeader(w, false)
-			w.Header().Set("Content-Length", strconv.Itoa(len(indexHTML)))
-			w.WriteHeader(200)
-			w.Write(indexHTML)
-			return
-		}
-		if r.Method != "POST" {
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		ip := normalizeIP(r.Header.Get("X-Real-IP"))
-		if ip == nil {
-			http.Error(w, "Bad IP", http.StatusBadRequest)
-			return
-		}
-		if !checkToken(w, r) {
-			return
-		}
+func getRealIP(r *http.Request) net.IP {
+	// Try X-Real-IP first
+	realIP := r.Header.Get("X-Real-IP")
+	if realIP != "" {
+		return net.ParseIP(realIP)
+	}
 
-		ok := allowIP(ip)
-		writeHeader(w, true)
-		w.WriteHeader(200)
-		fmt.Fprintln(w, ip)
-		fmt.Fprintf(w, "OK: %v", ok)
-	})
+	// Try X-Forwarded-For
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff != "" {
+		// X-Forwarded-For can contain multiple IPs, take the first one
+		ips := strings.Split(xff, ",")
+		if len(ips) > 0 {
+			return net.ParseIP(strings.TrimSpace(ips[0]))
+		}
+	}
 
-	addr := os.Getenv("LISTEN")
-	if addr == "" {
-		addr = ":8080"
+	// Fallback to RemoteAddr
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return net.ParseIP(r.RemoteAddr)
+	}
+	return net.ParseIP(host)
+}
+
+func badIP(ip net.IP) bool {
+	return ip == nil || ip.IsUnspecified()
+}
+
+func ipString(ip net.IP, ipv4 bool) string {
+	if badIP(ip) {
+		return ""
+	}
+	v4 := ip.To4()
+	if ipv4 {
+		if v4 != nil {
+			return v4.String()
+		}
+		return ""
+	}
+	if v4 != nil {
+		return ""
+	}
+	return ip.String()
+}
+
+var exactHandlers = map[string]http.Handler{}
+
+type wrapResponseWriter struct {
+	http.ResponseWriter
+	code   int
+	length int
+}
+
+func (w *wrapResponseWriter) WriteHeader(code int) {
+	w.code = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *wrapResponseWriter) Write(p []byte) (int, error) {
+	if w.code == 0 {
+		w.code = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(p)
+	w.length += n
+	return n, err
+}
+
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	var (
+		configFile   string
+		rootPath     string
+		inBackground bool
+		shell        string
+		addr         string
+		tlsConfig    string
+	)
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: knock [OPTION]...\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "Knock is a simple tool to knock on a door.\n\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "Options:\n")
+		flag.CommandLine.PrintDefaults()
+	}
+	flag.StringVar(&configFile, "c", "knock.conf", "config file")
+	flag.StringVar(&rootPath, "p", "/", "index page path for http server")
+	flag.BoolVar(&inBackground, "b", false, "run scripts in background")
+	flag.StringVar(&shell, "shell", "bash", "run scripts with this shell")
+	flag.StringVar(&addr, "a", ":8080", "address to listen on")
+	flag.StringVar(&tlsConfig, "tls", "", "TLS config file, format: cert-file:key-file")
+	flag.Parse()
+	rootURL, err := url.Parse(rootPath)
+	if err != nil {
+		log.Fatalf("error parsing root path: %v", err)
+	}
+	config, err := ParseConfigFile(configFile)
+	if err != nil {
+		log.Fatalf("error parsing config file: %v", err)
 	}
 	globalToken = os.Getenv("TOKEN")
 	if globalToken == "" {
 		globalToken = getCSRF()
 		log.Printf("Generated token: %s", globalToken)
 	}
-	log.Printf("Listening on %s\n", addr)
-	http.ListenAndServe(addr, nil)
+	ipPath := rootURL.JoinPath("ip").Path
+	exactHandlers[rootURL.Path] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		csrf := writeHeader(w, false)
+		indexTemplate.Execute(w, &templateData{
+			Config: config,
+			Csrf:   csrf,
+			IPPath: ipPath,
+		})
+	})
+	exactHandlers[ipPath] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		realIP := getRealIP(r)
+		if badIP(realIP) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		if v4 := realIP.To4(); v4 != nil {
+			w.Write([]byte(v4.String()))
+		} else {
+			w.Write([]byte(realIP.String()))
+		}
+	})
+	for _, group := range config.Groups {
+		exactHandlers[group.Path] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != "POST" {
+				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if !checkToken(w, r) {
+				return
+			}
+
+			var formIP net.IP
+			if i := r.Form.Get("ip"); i != "" {
+				ip := net.ParseIP(i)
+				if badIP(ip) {
+					log.Printf("invalid IP: %s", i)
+					http.Error(w, "Invalid IP: "+i, http.StatusBadRequest)
+					return
+				}
+				formIP = ip
+			}
+			realIP := getRealIP(r)
+			if badIP(realIP) {
+				log.Printf("invalid IP: %s", realIP)
+				http.Error(w, "Bad Request", http.StatusBadRequest)
+				return
+			}
+
+			writeHeader(w, true)
+			err := runScripts(shell, group.Script,
+				inBackground || group.Background,
+				fmt.Sprintf("request_ipv6=%s", ipString(realIP, false)),
+				fmt.Sprintf("request_ipv4=%s", ipString(realIP, true)),
+				fmt.Sprintf("form_ipv6=%s", ipString(formIP, false)),
+				fmt.Sprintf("form_ipv4=%s", ipString(formIP, true)),
+			)
+			if err != nil {
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK"))
+		})
+	}
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		ww := &wrapResponseWriter{ResponseWriter: w}
+		w = ww
+		start := time.Now()
+		defer func() {
+			log.Printf("request: %s %s %d %dbytes %dms",
+				r.Method, r.URL.Path, ww.code, ww.length,
+				time.Since(start).Milliseconds())
+		}()
+
+		if r.Method == http.MethodOptions {
+			writeHeader(w, true)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if h, ok := exactHandlers[r.URL.Path]; ok {
+			h.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "Not Found", http.StatusNotFound)
+	})
+
+	if tlsConfig != "" {
+		parts := strings.Split(tlsConfig, ":")
+		if len(parts) != 2 {
+			log.Fatalf("invalid tls config: %s", tlsConfig)
+		}
+		certFile := parts[0]
+		keyFile := parts[1]
+		log.Printf("Listening on %s with TLS\n", addr)
+		http.ListenAndServeTLS(addr, certFile, keyFile, nil)
+	} else {
+		log.Printf("Listening on %s\n", addr)
+		http.ListenAndServe(addr, nil)
+	}
 }
