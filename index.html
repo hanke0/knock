@@ -281,7 +281,7 @@
                 <p>Current IP is <span class="ip">Loading...</span></p>
                 <input name="csrf-token" value="{{$csrfToken}}" type="hidden" hidden>
                 <input name="ip" value="" placeholder="IP Address" type="text">
-                <input name="timeout" value="0" type="text" pattern="^\d*[smhdy]?$" placeholder="Timeout, support unit [s,m,h,d,y]">
+                <input name="timeout" value="" type="text" pattern="^\d*[smhdy]?$" placeholder="Timeout, support unit [s,m,h,d,y]">
                 <input name="token" value="" type="password" placeholder="Token">
                 <button type="submit">Knock</button>
             </form>
