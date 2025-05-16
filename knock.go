@@ -401,6 +401,7 @@ func ParseCustomDuration(s string) (time.Duration, error) {
 			current.WriteRune(r)
 		} else {
 			if current.Len() > 0 {
+				current.WriteRune(r)
 				parts = append(parts, current.String())
 				current.Reset()
 			}
