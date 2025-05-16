@@ -439,16 +439,16 @@ func main() {
 			}
 			timeout := r.Form.Get("timeout")
 			if timeout == "" {
-				timeout == "0"
+				timeout = "0"
 			}
 			to, err := strconv.ParseUint(timeout, 10, 64)
 			if err != nil {
-				log.Printf("invalid timeout: %s, err:%v", timeout, err)a
+				log.Printf("invalid timeout: %s, err:%v", timeout, err)
 				http.Error(w, "Bad Request", http.StatusBadRequest)
 				return
 			}
 			writeHeader(w, true)
-			err := runScripts(shell, group.Script,
+			err = runScripts(shell, group.Script,
 				inBackground || group.Background,
 				fmt.Sprintf("request_ipv6=%s", ipString(realIP, false)),
 				fmt.Sprintf("request_ipv4=%s", ipString(realIP, true)),
