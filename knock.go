@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"bufio"
@@ -436,7 +437,16 @@ func main() {
 				http.Error(w, "Bad Request", http.StatusBadRequest)
 				return
 			}
-
+			timeout := r.Form.Get("timeout")
+			if timeout == "" {
+				timeout == "0"
+			}
+			to, err := strconv.ParseUint(timeout, 10, 64)
+			if err != nil {
+				log.Printf("invalid timeout: %s, err:%v", timeout, err)a
+				http.Error(w, "Bad Request", http.StatusBadRequest)
+				return
+			}
 			writeHeader(w, true)
 			err := runScripts(shell, group.Script,
 				inBackground || group.Background,
@@ -444,6 +454,7 @@ func main() {
 				fmt.Sprintf("request_ipv4=%s", ipString(realIP, true)),
 				fmt.Sprintf("form_ipv6=%s", ipString(formIP, false)),
 				fmt.Sprintf("form_ipv4=%s", ipString(formIP, true)),
+				fmt.Sprintf("knock_timeout=%d", to),
 			)
 			if err != nil {
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)

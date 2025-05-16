@@ -34,7 +34,7 @@
             flex-direction: column;
             align-items: center;
             padding: 2rem 1rem;
-            background-image: 
+            background-image:
                 radial-gradient(at 40% 20%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
                 radial-gradient(at 80% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 50%),
                 radial-gradient(at 0% 50%, rgba(16, 185, 129, 0.15) 0px, transparent 50%);
@@ -49,10 +49,10 @@
             left: 0;
             right: 0;
             height: 1px;
-            background: linear-gradient(90deg, 
-                transparent 0%, 
-                rgba(99, 102, 241, 0.2) 50%, 
-                transparent 100%);
+            background: linear-gradient(90deg,
+                    transparent 0%,
+                    rgba(99, 102, 241, 0.2) 50%,
+                    transparent 100%);
         }
 
         h1 {
@@ -74,9 +74,9 @@
             transform: translateX(-50%);
             width: 50px;
             height: 3px;
-            background: linear-gradient(90deg, 
-                var(--primary-color), 
-                var(--success-color));
+            background: linear-gradient(90deg,
+                    var(--primary-color),
+                    var(--success-color));
             border-radius: 2px;
         }
 
@@ -99,7 +99,7 @@
             background: var(--card-background);
             padding: 1.75rem;
             border-radius: 1rem;
-            box-shadow: 
+            box-shadow:
                 0 8px 20px var(--shadow-color),
                 0 0 0 1px rgba(226, 232, 240, 0.8);
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -117,16 +117,16 @@
             left: 0;
             right: 0;
             height: 3px;
-            background: linear-gradient(90deg, 
-                var(--primary-color), 
-                var(--success-color));
+            background: linear-gradient(90deg,
+                    var(--primary-color),
+                    var(--success-color));
             opacity: 0;
             transition: opacity 0.3s ease;
         }
 
         form:hover {
             transform: translateY(-3px);
-            box-shadow: 
+            box-shadow:
                 0 12px 24px var(--shadow-color),
                 0 0 0 1px rgba(226, 232, 240, 0.8);
         }
@@ -248,7 +248,7 @@
                 grid-template-columns: 1fr;
                 max-width: 360px;
             }
-            
+
             h1 {
                 font-size: 2.25rem;
             }
@@ -281,6 +281,7 @@
                 <p>Current IP is <span class="ip">Loading...</span></p>
                 <input name="csrf-token" value="{{$csrfToken}}" id="csrf-token" type="hidden" hidden>
                 <input name="ip" value="" placeholder="IP Address" id="ip" type="text">
+                <input name="timeout" value="0" type="number" min="0" pattern="^\d*$" placeholder="Timeout">
                 <input name="token" value="" type="password" placeholder="Token">
                 <button id="knock-button">Knock</button>
             </form>
