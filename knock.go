@@ -542,7 +542,7 @@ func main() {
 				timeout = timeout + "s"
 			}
 			to, err := ParseCustomDuration(timeout)
-			if err != nil || to < time.Second {
+			if err != nil || to < 0 {
 				log.Printf("invalid timeout: %s, err:%v", timeout, err)
 				http.Error(w, "Bad Request", http.StatusBadRequest)
 				return
