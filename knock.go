@@ -280,7 +280,7 @@ var inheritEnv = []string{
 	"LC_COLLATE", "LC_CTYPE", "LC_MONETARY", "LC_MESSAGES", "LC_NUMERIC", "LC_TIME", "LC_ALL",
 }
 
-func runScripts(shell, script string, inBackground bool, envs ...string) error {
+func runScripts(path, shell, script string, inBackground bool, envs ...string) error {
 	cmd := exec.Command(shell, "-c", script)
 	var outout strings.Builder
 	cmd.Stdout = &outout
@@ -297,22 +297,21 @@ func runScripts(shell, script string, inBackground bool, envs ...string) error {
 			}
 		}
 	}
-	if inBackground {
-		go func() {
-			err := cmd.Run()
-			if err != nil {
-				log.Printf("error running script: %v, output: %s", err, outout.String())
-				return
-			}
-		}()
+	runfn := func() error {
+		err := cmd.Run()
+		if err != nil {
+			log.Printf("error running script %s: %v, output: %s", path, err, outout.String())
+			return err
+		}
+		log.Printf("success running script %s: output: %s", path, outout.String())
 		return nil
 	}
-	err := cmd.Run()
-	if err != nil {
-		log.Printf("error running script: %v, output: %s", err, outout.String())
-		return err
+
+	if inBackground {
+		go runfn()
+		return nil
 	}
-	return nil
+	return runfn()
 }
 
 func getRealIP(r *http.Request) net.IP {
@@ -548,7 +547,9 @@ func main() {
 				return
 			}
 			writeHeader(w, true)
-			err = runScripts(shell, group.Script,
+			err = runScripts(
+				r.URL.Path,
+				shell, group.Script,
 				inBackground || group.Background,
 				fmt.Sprintf("request_ipv6=%s", ipString(realIP, false)),
 				fmt.Sprintf("request_ipv4=%s", ipString(realIP, true)),
