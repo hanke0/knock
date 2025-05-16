@@ -84,7 +84,7 @@ func writeCSRFHeader(w http.ResponseWriter) (string, error) {
 		return "", err
 	}
 	w.Header().Add("Set-Cookie",
-		fmt.Sprintf("csrf-token=%s; Max-Age=3000; Path=/knock; Secure; SameSite=Strict", token))
+		fmt.Sprintf("knock-csrf=%s; Max-Age=3000; Path=/; Secure; SameSite=Strict; HttpOnly", token))
 	return token, nil
 }
 
@@ -99,38 +99,38 @@ func checkToken(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
-	token := r.FormValue("csrf-token")
-	if token == "" {
+	formCsrf := r.FormValue("csrf-token")
+	if formCsrf == "" {
 		log.Print("no csrf token found in form\n")
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return false
 	}
-	var csrf string
+	var cookieCsrf string
 	for _, v := range r.Cookies() {
-		if v.Name == "csrf-token" {
-			csrf = v.Value
+		if v.Name == "knock-csrf" {
+			cookieCsrf = v.Value
 			break
 		}
 	}
-	if csrf == "" {
+	if cookieCsrf == "" {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		log.Print("no csrf token found in cookie\n")
 		return false
 	}
-	if token != csrf {
+	if formCsrf != cookieCsrf {
 		http.Error(w, "Forbidden", http.StatusForbidden)
-		log.Printf("csrf token mismatch: %s != %s", token, csrf)
+		log.Printf("csrf mismatch: %s != %s", formCsrf, cookieCsrf)
 		return false
 	}
-	token = r.Form.Get("token")
-	if token != globalToken {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		log.Printf("token mismatch: %s != %s", token, globalToken)
-		return false
-	}
-	if err := isGoodCSRF(token); err != nil {
+	if err := isGoodCSRF(formCsrf); err != nil {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		log.Printf("error parsing csrf token: %v", err)
+		return false
+	}
+	token := r.Form.Get("token")
+	if token != globalToken {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		log.Printf("token mismatch: %s", token)
 		return false
 	}
 	return true
