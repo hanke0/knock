@@ -1,26 +1,32 @@
 package main
 
 import (
+	// embed index.html
 	_ "embed"
-	"os/exec"
-	"strconv"
-	"time"
 
 	"bufio"
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"html/template"
 	"io"
 	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 )
 
 //go:embed index.html
@@ -36,16 +42,29 @@ func init() {
 	}
 }
 
-func getCSRF() string {
-	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, 32)
-	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
-	}
-	return string(b)
+func getCSRF() (string, error) {
+	ts := time.Now().Unix()
+	csrf := strconv.FormatInt(ts, 10)
+	return EncryptString([]byte(csrf), globalTokenSha[:])
 }
 
-func writeHeader(w http.ResponseWriter, raw bool) string {
+func isGoodCSRF(token string) error {
+	plain, err := DecryptString(token, globalTokenSha[:])
+	if err != nil {
+		return err
+	}
+	ts, err := strconv.ParseInt(plain, 10, 64)
+	if err != nil {
+		return err
+	}
+	t := time.Unix(ts, 0)
+	if time.Since(t) > time.Minute*5 {
+		return fmt.Errorf("csrf token is expired: %s", t)
+	}
+	return nil
+}
+
+func writeHeader(w http.ResponseWriter, raw bool) {
 	if raw {
 		w.Header().Set("Content-Type", "text/plain")
 	} else {
@@ -57,13 +76,22 @@ func writeHeader(w http.ResponseWriter, raw bool) string {
 	w.Header().Set("X-XSS-Protection", "1; mode=block")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cross-Origin-Resource-Policy", "same-site")
-	token := getCSRF()
-	w.Header().Add("Set-Cookie",
-		fmt.Sprintf("csrf-token=%s; Max-Age=3000; Path=/knock; Secure; SameSite=Strict", token))
-	return token
 }
 
-var globalToken string
+func writeCSRFHeader(w http.ResponseWriter) (string, error) {
+	token, err := getCSRF()
+	if err != nil {
+		return "", err
+	}
+	w.Header().Add("Set-Cookie",
+		fmt.Sprintf("csrf-token=%s; Max-Age=3000; Path=/knock; Secure; SameSite=Strict", token))
+	return token, nil
+}
+
+var (
+	globalToken    string
+	globalTokenSha = [sha256.Size]byte{}
+)
 
 func checkToken(w http.ResponseWriter, r *http.Request) bool {
 	if err := r.ParseForm(); err != nil {
@@ -73,6 +101,7 @@ func checkToken(w http.ResponseWriter, r *http.Request) bool {
 
 	token := r.FormValue("csrf-token")
 	if token == "" {
+		log.Print("no csrf token found in form\n")
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return false
 	}
@@ -85,7 +114,7 @@ func checkToken(w http.ResponseWriter, r *http.Request) bool {
 	}
 	if csrf == "" {
 		http.Error(w, "Forbidden", http.StatusForbidden)
-		log.Printf("no csrf token found")
+		log.Print("no csrf token found in cookie\n")
 		return false
 	}
 	if token != csrf {
@@ -97,6 +126,11 @@ func checkToken(w http.ResponseWriter, r *http.Request) bool {
 	if token != globalToken {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		log.Printf("token mismatch: %s != %s", token, globalToken)
+		return false
+	}
+	if err := isGoodCSRF(token); err != nil {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		log.Printf("error parsing csrf token: %v", err)
 		return false
 	}
 	return true
@@ -436,16 +470,24 @@ func main() {
 	}
 	globalToken = os.Getenv("TOKEN")
 	if globalToken == "" {
-		globalToken = getCSRF()
-		log.Printf("Generated token: %s", globalToken)
+		log.Fatal("TOKEN environment variable not set")
+		return
 	}
+	globalTokenSha = sha256.Sum256([]byte(globalToken))
+
 	ipPath := rootURL.JoinPath("ip").Path
 	exactHandlers[rootURL.Path] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		csrf := writeHeader(w, false)
+		writeHeader(w, false)
+		csrf, err := writeCSRFHeader(w)
+		if err != nil {
+			log.Printf("error writing csrf header: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 		indexTemplate.Execute(w, &templateData{
 			Config: config,
 			Csrf:   csrf,
@@ -552,9 +594,78 @@ func main() {
 		certFile := parts[0]
 		keyFile := parts[1]
 		log.Printf("Listening on %s with TLS\n", addr)
-		http.ListenAndServeTLS(addr, certFile, keyFile, nil)
+		err = http.ListenAndServeTLS(addr, certFile, keyFile, nil)
 	} else {
 		log.Printf("Listening on %s\n", addr)
-		http.ListenAndServe(addr, nil)
+		err = http.ListenAndServe(addr, nil)
 	}
+	if errors.Is(err, http.ErrServerClosed) {
+		log.Println("Server closed")
+	} else {
+		log.Fatal("Serve exit with ", err)
+	}
+}
+
+// EncryptString encrypts a string using a password
+func EncryptString(plaintext, key []byte) (string, error) {
+	// Create a new AES cipher block
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return "", err
+	}
+
+	// Create a new GCM mode
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	// Create a nonce
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+
+	// Encrypt the plaintext
+	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+
+	// Return the encrypted text as base64 string
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+// DecryptString decrypts an encrypted string using a password
+func DecryptString(encryptedText string, key []byte) (string, error) {
+	// Decode the base64 string
+	ciphertext, err := base64.StdEncoding.DecodeString(encryptedText)
+	if err != nil {
+		return "", err
+	}
+
+	// Create a new AES cipher block
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return "", err
+	}
+
+	// Create a new GCM mode
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	// Check if the ciphertext is long enough
+	if len(ciphertext) < gcm.NonceSize() {
+		return "", errors.New("ciphertext too short")
+	}
+
+	// Extract the nonce
+	nonce := ciphertext[:gcm.NonceSize()]
+	ciphertext = ciphertext[gcm.NonceSize():]
+
+	// Decrypt the ciphertext
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", err
+	}
+	return string(plaintext), nil
 }

@@ -274,16 +274,16 @@
     <h1>Knock</h1>
     <div class="container">
         {{ $csrfToken := .Csrf }}
-        {{ range $i, $group := .Config.Groups }}
+        {{ range .Config.Groups }}
         <div class="group">
-            <form id="knock{{$i}}" action="{{.Path}}" method="post" enctype="application/x-www-form-urlencoded">
+            <form action="{{.Path}}" method="post" enctype="application/x-www-form-urlencoded">
                 <h2>{{.Desc}}</h2>
                 <p>Current IP is <span class="ip">Loading...</span></p>
-                <input name="csrf-token" value="{{$csrfToken}}" id="csrf-token" type="hidden" hidden>
-                <input name="ip" value="" placeholder="IP Address" id="ip" type="text">
+                <input name="csrf-token" value="{{$csrfToken}}" type="hidden" hidden>
+                <input name="ip" value="" placeholder="IP Address" type="text">
                 <input name="timeout" value="0" type="text" pattern="^\d*[smhdy]?$" placeholder="Timeout, support unit [s,m,h,d,y]">
                 <input name="token" value="" type="password" placeholder="Token">
-                <button id="knock-button">Knock</button>
+                <button type="submit">Knock</button>
             </form>
         </div>
         {{ end }}
