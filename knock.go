@@ -349,6 +349,60 @@ func (w *wrapResponseWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// ParseCustomDuration parses a duration string with custom units:
+// s = seconds
+// m = minutes
+// h = hours
+// d = days
+// y = years
+// Example: "1h30m" or "2d5h" or "1y6m"
+func ParseCustomDuration(s string) (time.Duration, error) {
+	var total time.Duration
+
+	// Split the string into parts
+	parts := make([]string, 0)
+	var current strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' || r == '.' {
+			current.WriteRune(r)
+		} else {
+			if current.Len() > 0 {
+				parts = append(parts, current.String())
+				current.Reset()
+			}
+		}
+	}
+
+	// Process each part
+	for _, part := range parts {
+		if len(part) < 2 {
+			return 0, fmt.Errorf("invalid number in duration: %s", s)
+		}
+
+		value, err := strconv.ParseFloat(part[:len(part)-1], 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid number in duration: %s", part)
+		}
+
+		unit := part[len(part)-1:]
+		switch unit {
+		case "s":
+			total += time.Duration(value * float64(time.Second))
+		case "m":
+			total += time.Duration(value * float64(time.Minute))
+		case "h":
+			total += time.Duration(value * float64(time.Hour))
+		case "d":
+			total += time.Duration(value * 24 * float64(time.Hour))
+		case "y":
+			total += time.Duration(value * 365 * 24 * float64(time.Hour))
+		default:
+			return 0, fmt.Errorf("unknown unit: %s", unit)
+		}
+	}
+	return total, nil
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	var (
@@ -439,10 +493,13 @@ func main() {
 			}
 			timeout := r.Form.Get("timeout")
 			if timeout == "" {
-				timeout = "0"
+				timeout = "0s"
 			}
-			to, err := strconv.ParseUint(timeout, 10, 64)
-			if err != nil {
+			if v := timeout[len(timeout)-1]; v >= '0' && v <= '9' {
+				timeout = timeout + "s"
+			}
+			to, err := ParseCustomDuration(timeout)
+			if err != nil || to < time.Second {
 				log.Printf("invalid timeout: %s, err:%v", timeout, err)
 				http.Error(w, "Bad Request", http.StatusBadRequest)
 				return
@@ -454,7 +511,7 @@ func main() {
 				fmt.Sprintf("request_ipv4=%s", ipString(realIP, true)),
 				fmt.Sprintf("form_ipv6=%s", ipString(formIP, false)),
 				fmt.Sprintf("form_ipv4=%s", ipString(formIP, true)),
-				fmt.Sprintf("knock_timeout=%d", to),
+				fmt.Sprintf("knock_timeout=%d", int64(to.Seconds())),
 			)
 			if err != nil {
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
