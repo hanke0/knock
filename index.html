@@ -141,6 +141,45 @@
             margin-bottom: 1rem;
             color: var(--text-color);
             letter-spacing: -0.01em;
+            position: relative;
+            cursor: help;
+            text-align: center;
+        }
+
+        h2 .tooltip {
+            visibility: hidden;
+            position: absolute;
+            z-index: 1;
+            top: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: var(--text-color);
+            color: white;
+            text-align: center;
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: normal;
+            white-space: nowrap;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+
+        h2 .tooltip::after {
+            content: "";
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            margin-left: -5px;
+            border-width: 5px;
+            border-style: solid;
+            border-color: transparent transparent var(--text-color) transparent;
+        }
+
+        h2:hover .tooltip {
+            visibility: visible;
+            opacity: 1;
         }
 
         input {
@@ -277,7 +316,7 @@
         {{ range .Config.Groups }}
         <div class="group">
             <form action="{{.Path}}" method="post" enctype="application/x-www-form-urlencoded">
-                <h2>{{.Desc}}</h2>
+                <h2>{{.Title}}<span class="tooltip">{{.Desc}}</span></h2>
                 <p>Current IP is <span class="ip">Loading...</span></p>
                 <input name="csrf-token" value="{{$csrfToken}}" type="hidden" hidden>
                 <input name="ip" value="" placeholder="IP Address" type="text">

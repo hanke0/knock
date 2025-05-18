@@ -9,6 +9,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - name: Go test
+        run: |
+          go test -v ./...
       - name: Build dist
         run: |
           ./release.sh

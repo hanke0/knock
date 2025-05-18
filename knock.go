@@ -10,7 +10,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -35,6 +35,7 @@ var indexHTML string
 var indexTemplate *template.Template
 
 func init() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	var err error
 	indexTemplate, err = template.New("index").Parse(indexHTML)
 	if err != nil {
@@ -42,104 +43,21 @@ func init() {
 	}
 }
 
-func getCSRF() (string, error) {
-	ts := time.Now().Unix()
-	csrf := strconv.FormatInt(ts, 10)
-	return EncryptString([]byte(csrf), globalTokenSha[:])
-}
-
-func isGoodCSRF(token string) error {
-	plain, err := DecryptString(token, globalTokenSha[:])
+func main() {
+	server, err := NewServerWithArgs(os.Args)
 	if err != nil {
-		return err
+		log.Fatal(err)
 	}
-	ts, err := strconv.ParseInt(plain, 10, 64)
-	if err != nil {
-		return err
+	if err := server.ServeForever(); err != nil {
+		log.Fatal(err)
 	}
-	t := time.Unix(ts, 0)
-	if time.Since(t) > time.Minute*5 {
-		return fmt.Errorf("csrf token is expired: %s", t)
-	}
-	return nil
-}
-
-func writeHeader(w http.ResponseWriter, raw bool) {
-	if raw {
-		w.Header().Set("Content-Type", "text/plain")
-	} else {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	}
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("X-XSS-Protection", "1; mode=block")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Cross-Origin-Resource-Policy", "same-site")
-}
-
-func writeCSRFHeader(w http.ResponseWriter) (string, error) {
-	token, err := getCSRF()
-	if err != nil {
-		return "", err
-	}
-	w.Header().Add("Set-Cookie",
-		fmt.Sprintf("knock-csrf=%s; Max-Age=3000; Path=/; Secure; SameSite=Strict; HttpOnly", token))
-	return token, nil
-}
-
-var (
-	globalToken    string
-	globalTokenSha = [sha256.Size]byte{}
-)
-
-func checkToken(w http.ResponseWriter, r *http.Request) bool {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Parse Form Error", http.StatusBadRequest)
-		return false
-	}
-
-	formCsrf := r.FormValue("csrf-token")
-	if formCsrf == "" {
-		log.Print("no csrf token found in form\n")
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return false
-	}
-	var cookieCsrf string
-	for _, v := range r.Cookies() {
-		if v.Name == "knock-csrf" {
-			cookieCsrf = v.Value
-			break
-		}
-	}
-	if cookieCsrf == "" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		log.Print("no csrf token found in cookie\n")
-		return false
-	}
-	if formCsrf != cookieCsrf {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		log.Printf("csrf mismatch: %s != %s", formCsrf, cookieCsrf)
-		return false
-	}
-	if err := isGoodCSRF(formCsrf); err != nil {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		log.Printf("error parsing csrf token: %v", err)
-		return false
-	}
-	token := r.Form.Get("token")
-	if token != globalToken {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		log.Printf("token mismatch: %s", token)
-		return false
-	}
-	return true
 }
 
 var configGroupRE = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*$`)
 
 type configGroup struct {
 	Path       string
+	Title      string
 	Desc       string
 	Background bool
 	Script     string
@@ -174,13 +92,15 @@ func parseConfigGroup(line string) (*configGroup, error) {
 	for _, part := range parts[1:] {
 		keyvalue := strings.SplitN(part, "=", 2)
 		if len(keyvalue) != 2 {
-			return nil, fmt.Errorf("bad config group: %s", g)
+			return nil, fmt.Errorf("bad config group: %s cause by bad option pair: %s", g, part)
 		}
 		key := strings.TrimSpace(keyvalue[0])
 		value := strings.TrimSpace(keyvalue[1])
 		switch key {
 		case "desc":
 			cfg.Desc = value
+		case "title":
+			cfg.Title = value
 		case "background":
 			b, err := parseBool(value)
 			if err != nil {
@@ -188,8 +108,11 @@ func parseConfigGroup(line string) (*configGroup, error) {
 			}
 			cfg.Background = b
 		default:
-			return nil, fmt.Errorf("bad config group: %s", g)
+			return nil, fmt.Errorf("bad config group: %s cause by unknown options: %s", g, key)
 		}
+	}
+	if cfg.Title == "" {
+		cfg.Title = "Knock"
 	}
 	return &cfg, nil
 }
@@ -360,8 +283,6 @@ func ipString(ip net.IP, ipv4 bool) string {
 	return ip.String()
 }
 
-var exactHandlers = map[string]http.Handler{}
-
 type wrapResponseWriter struct {
 	http.ResponseWriter
 	code   int
@@ -437,52 +358,97 @@ func ParseCustomDuration(s string) (time.Duration, error) {
 	return total, nil
 }
 
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	var (
-		configFile   string
-		rootPath     string
-		inBackground bool
-		shell        string
-		addr         string
-		tlsConfig    string
-	)
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: knock [OPTION]...\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "Knock is a simple tool to knock on a door.\n\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "Options:\n")
-		flag.CommandLine.PrintDefaults()
-	}
-	flag.StringVar(&configFile, "c", "knock.conf", "config file")
-	flag.StringVar(&rootPath, "p", "/", "index page path for http server")
-	flag.BoolVar(&inBackground, "b", false, "run scripts in background")
-	flag.StringVar(&shell, "shell", "bash", "run scripts with this shell")
-	flag.StringVar(&addr, "a", ":8080", "address to listen on")
-	flag.StringVar(&tlsConfig, "tls", "", "TLS config file, format: cert-file:key-file")
-	flag.Parse()
-	rootURL, err := url.Parse(rootPath)
-	if err != nil {
-		log.Fatalf("error parsing root path: %v", err)
-	}
-	config, err := ParseConfigFile(configFile)
-	if err != nil {
-		log.Fatalf("error parsing config file: %v", err)
-	}
-	globalToken = os.Getenv("TOKEN")
-	if globalToken == "" {
-		log.Fatal("TOKEN environment variable not set")
-		return
-	}
-	globalTokenSha = sha256.Sum256([]byte(globalToken))
+type Server struct {
+	ConfigFile   string
+	RootPath     string
+	InBackground bool
+	Shell        string
+	Addr         string
+	TlsConfig    string
+	Token        string
 
+	handlers map[string]http.Handler
+	tokenSha [sha256.Size]byte
+}
+
+func NewServerWithArgs(args []string) (*Server, error) {
+	s := &Server{}
+	s.MustParseFlag(args)
+	return s, nil
+}
+
+func (s *Server) MustParseFlag(args []string) {
+	flagset := flag.NewFlagSet("knock", flag.ExitOnError)
+	flagset.Usage = func() {
+		fmt.Fprintf(flagset.Output(), "Usage: knock [OPTION]...\n")
+		fmt.Fprintf(flagset.Output(), "Knock is a simple tool to knock on a door.\n\n")
+		fmt.Fprintf(flagset.Output(), "Options:\n")
+		flagset.PrintDefaults()
+	}
+	flagset.StringVar(&s.ConfigFile, "c", "knock.conf", "config file")
+	flagset.StringVar(&s.RootPath, "p", "/", "index page path for http server")
+	flagset.BoolVar(&s.InBackground, "b", false, "run scripts in background")
+	flagset.StringVar(&s.Shell, "shell", "bash", "run scripts with this shell")
+	flagset.StringVar(&s.Addr, "a", ":8080", "address to listen on")
+	flagset.StringVar(&s.TlsConfig, "tls", "", "TLS config file, format: cert-file:key-file")
+	flagset.Parse(args[1:])
+}
+
+func (s *Server) ServeForever() error {
+	if s.Token == "" {
+		s.Token = os.Getenv("TOKEN")
+		if s.Token == "" {
+			return fmt.Errorf("TOKEN environment variable not set")
+		}
+	}
+	s.tokenSha = sha256.Sum256([]byte(s.Token))
+	if err := s.initHandlers(); err != nil {
+		return err
+	}
+	return s.serveHTTPForever()
+}
+
+func (s *Server) serveHTTPForever() error {
+	handler := s.getHTTPHandler()
+	var err error
+	if s.TlsConfig != "" {
+		parts := strings.Split(s.TlsConfig, ":")
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid tls config: %s", s.TlsConfig)
+		}
+		certFile := parts[0]
+		keyFile := parts[1]
+		log.Printf("Listening on %s with TLS\n", s.Addr)
+		err = http.ListenAndServeTLS(s.Addr, certFile, keyFile, handler)
+	} else {
+		log.Printf("Listening on %s\n", s.Addr)
+		err = http.ListenAndServe(s.Addr, handler)
+	}
+	if errors.Is(err, http.ErrServerClosed) {
+		log.Println("Server closed")
+		return nil
+	}
+	return err
+}
+
+func (s *Server) initHandlers() error {
+	rootURL, err := url.Parse(s.RootPath)
+	if err != nil {
+		return fmt.Errorf("error parsing root path: %v", err)
+	}
+	config, err := ParseConfigFile(s.ConfigFile)
+	if err != nil {
+		return fmt.Errorf("error parsing config file: %v", err)
+	}
+	s.handlers = make(map[string]http.Handler)
 	ipPath := rootURL.JoinPath("ip").Path
-	exactHandlers[rootURL.Path] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.handlers[rootURL.Path] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		writeHeader(w, false)
-		csrf, err := writeCSRFHeader(w)
+		s.writeHeader(w, false)
+		csrf, err := s.writeCSRFHeader(w)
 		if err != nil {
 			log.Printf("error writing csrf header: %v", err)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -494,7 +460,7 @@ func main() {
 			IPPath: ipPath,
 		})
 	})
-	exactHandlers[ipPath] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.handlers[ipPath] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		realIP := getRealIP(r)
 		if badIP(realIP) {
 			w.WriteHeader(http.StatusBadRequest)
@@ -508,12 +474,12 @@ func main() {
 		}
 	})
 	for _, group := range config.Groups {
-		exactHandlers[group.Path] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.handlers[group.Path] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != "POST" {
 				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			if !checkToken(w, r) {
+			if !s.checkToken(w, r) {
 				return
 			}
 
@@ -546,11 +512,11 @@ func main() {
 				http.Error(w, "Bad Request", http.StatusBadRequest)
 				return
 			}
-			writeHeader(w, true)
+			s.writeHeader(w, true)
 			err = runScripts(
 				r.URL.Path,
-				shell, group.Script,
-				inBackground || group.Background,
+				s.Shell, group.Script,
+				s.InBackground || group.Background,
 				fmt.Sprintf("request_ipv6=%s", ipString(realIP, false)),
 				fmt.Sprintf("request_ipv4=%s", ipString(realIP, true)),
 				fmt.Sprintf("form_ipv6=%s", ipString(formIP, false)),
@@ -565,8 +531,11 @@ func main() {
 			w.Write([]byte("OK"))
 		})
 	}
+	return nil
+}
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getHTTPHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ww := &wrapResponseWriter{ResponseWriter: w}
 		w = ww
 		start := time.Now()
@@ -577,94 +546,144 @@ func main() {
 		}()
 
 		if r.Method == http.MethodOptions {
-			writeHeader(w, true)
+			s.writeHeader(w, true)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		if h, ok := exactHandlers[r.URL.Path]; ok {
+		if h, ok := s.handlers[r.URL.Path]; ok {
 			h.ServeHTTP(w, r)
 			return
 		}
 		http.Error(w, "Not Found", http.StatusNotFound)
 	})
+}
 
-	if tlsConfig != "" {
-		parts := strings.Split(tlsConfig, ":")
-		if len(parts) != 2 {
-			log.Fatalf("invalid tls config: %s", tlsConfig)
+func (s *Server) getCSRF() (string, error) {
+	ts := time.Now().Unix()
+	csrf := strconv.FormatInt(ts, 10)
+	return EncryptString([]byte(csrf), s.tokenSha[:])
+}
+
+func (s *Server) isGoodCSRF(token string) error {
+	plain, err := DecryptString(token, s.tokenSha[:])
+	if err != nil {
+		return err
+	}
+	ts, err := strconv.ParseInt(plain, 10, 64)
+	if err != nil {
+		return err
+	}
+	t := time.Unix(ts, 0)
+	if time.Since(t) > time.Minute*5 {
+		return fmt.Errorf("csrf token is expired: %s", t)
+	}
+	return nil
+}
+
+func (s *Server) writeHeader(w http.ResponseWriter, raw bool) {
+	if raw {
+		w.Header().Set("Content-Type", "text/plain")
+	} else {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-XSS-Protection", "1; mode=block")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-site")
+}
+
+func (s *Server) writeCSRFHeader(w http.ResponseWriter) (string, error) {
+	token, err := s.getCSRF()
+	if err != nil {
+		return "", err
+	}
+	w.Header().Add("Set-Cookie",
+		fmt.Sprintf("knock-csrf=%s; Max-Age=3000; Path=/; Secure; SameSite=Strict; HttpOnly", token))
+	return token, nil
+}
+
+func (s *Server) checkToken(w http.ResponseWriter, r *http.Request) bool {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Parse Form Error", http.StatusBadRequest)
+		return false
+	}
+
+	formCsrf := r.FormValue("csrf-token")
+	if formCsrf == "" {
+		log.Print("no csrf token found in form\n")
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return false
+	}
+	var cookieCsrf string
+	for _, v := range r.Cookies() {
+		if v.Name == "knock-csrf" {
+			cookieCsrf = v.Value
+			break
 		}
-		certFile := parts[0]
-		keyFile := parts[1]
-		log.Printf("Listening on %s with TLS\n", addr)
-		err = http.ListenAndServeTLS(addr, certFile, keyFile, nil)
-	} else {
-		log.Printf("Listening on %s\n", addr)
-		err = http.ListenAndServe(addr, nil)
 	}
-	if errors.Is(err, http.ErrServerClosed) {
-		log.Println("Server closed")
-	} else {
-		log.Fatal("Serve exit with ", err)
+	if cookieCsrf == "" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		log.Print("no csrf token found in cookie\n")
+		return false
 	}
+	if formCsrf != cookieCsrf {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		log.Printf("csrf mismatch: %s != %s", formCsrf, cookieCsrf)
+		return false
+	}
+	if err := s.isGoodCSRF(formCsrf); err != nil {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		log.Printf("error parsing csrf token: %v", err)
+		return false
+	}
+	token := r.Form.Get("token")
+	if token != s.Token {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		log.Printf("token mismatch: %s", token)
+		return false
+	}
+	return true
 }
 
 // EncryptString encrypts a string using a password
 func EncryptString(plaintext, key []byte) (string, error) {
-	// Create a new AES cipher block
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return "", err
 	}
-
-	// Create a new GCM mode
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return "", err
 	}
-
-	// Create a nonce
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
 	}
-
-	// Encrypt the plaintext
 	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
-
-	// Return the encrypted text as base64 string
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
+	return hex.EncodeToString(ciphertext), nil
 }
 
 // DecryptString decrypts an encrypted string using a password
 func DecryptString(encryptedText string, key []byte) (string, error) {
-	// Decode the base64 string
-	ciphertext, err := base64.StdEncoding.DecodeString(encryptedText)
+	ciphertext, err := hex.DecodeString(encryptedText)
 	if err != nil {
 		return "", err
 	}
-
-	// Create a new AES cipher block
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return "", err
 	}
-
-	// Create a new GCM mode
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return "", err
 	}
-
-	// Check if the ciphertext is long enough
 	if len(ciphertext) < gcm.NonceSize() {
 		return "", errors.New("ciphertext too short")
 	}
-
-	// Extract the nonce
 	nonce := ciphertext[:gcm.NonceSize()]
 	ciphertext = ciphertext[gcm.NonceSize():]
-
-	// Decrypt the ciphertext
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return "", err
