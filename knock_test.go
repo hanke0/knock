@@ -74,7 +74,7 @@ func findTestListenAddr(t *testing.T) string {
 
 func TestServerOK(t *testing.T) {
 	cfg := `
-	[/knock#desc=knock#title=Knock]
+	[/knock#desc=knock allow#title=Knock]
 	echovar() {
 		eval "echo \"$1=\$$1\"">>"%s/knock.log"
 	}
@@ -83,6 +83,12 @@ func TestServerOK(t *testing.T) {
 	echovar form_ipv4
 	echovar form_ipv4
 	echovar knock_timeout
+	[ /knock1#desc=knock allow#title=Knock ]
+	:
+	[/knock2#desc=knock allow#title=Knock ]
+	:
+	[ /knock3#desc=knock allow#title=Knock]
+	: 
 	`
 	dir := setupTestConfig(t, cfg)
 	addr := findTestListenAddr(t)
